@@ -1,6 +1,7 @@
 import json
 import random
 import boto3
+import datetime
 from botocore.exceptions import ClientError
 from opensearchpy import OpenSearch, RequestsHttpConnection
 from requests_aws4auth import AWS4Auth
@@ -178,6 +179,18 @@ def get_restaurant_data_from_dynamodb(rids):
     return ret_data
 
 
+def put_user_recommendation_into_dynamodb(msg, user_data):
+    session = boto3.Session()
+    ddb = session.client("dynamodb")
+    table = "NYRestoUsers"
+    item = dict()
+    item["phoneNum"] = {"S": user_data["phone_num"]}
+    item["insertTs"] = {"S": datetime.datetime.now().strftime("%Y%m%d%H%M%S%f")}
+    item["recommendation"] = {"S": msg}
+    response = ddb.put_item(TableName=table, Item=item)
+    print(f"response from dynamodb after putting userdata: {response}")
+
+
 def get_restaurant_recommendation_msg(user_attr):
     cuisine = user_attr["cuisine"]
     rids = get_restaurant_ids_from_opensearch(cuisine)
@@ -186,7 +199,7 @@ def get_restaurant_recommendation_msg(user_attr):
     # preparing message to return to the user
     msg = list()
     msg.append(
-        "Hello there, I am recommending you following restaurants for your recent request to dine in. Enjoy your meal!\n")
+        f"Hello there, I am recommending you following {cuisine} restaurants for your recent request to dine in. Enjoy your meal!\n")
     for i, d in enumerate(data):
         msg.append(
             f"[{i + 1}] Restaurant Name: {d['name']}; Address: {d['address']}, {d['zipcode']}; Rating: {d['rating']}; Number of Reviews: {d['reviews']}.\n")
@@ -218,6 +231,7 @@ def pull_query_param_from_queue():
         msg_body = msgs[0]["Body"]
         msg_attr = dict()
         msg_attr["cuisine"] = msgs[0]["MessageAttributes"]["cuisine"]["StringValue"]
+        msg_attr["phone_num"] = msgs[0]["MessageAttributes"]["phone_num"]["StringValue"]
         receipt_handle = msgs[0]["ReceiptHandle"]
 
         # deleteing message from queue
@@ -226,7 +240,7 @@ def pull_query_param_from_queue():
         print(f"message attributes (Extracted from SQS message): {msg_attr}")
         return msg_attr
     else:
-        return {"cuisine": "lebanese"}
+        return {"cuisine": "lebanese", "phone_num": ""}
 
 
 def lambda_handler(event, context):
@@ -244,6 +258,10 @@ def lambda_handler(event, context):
 
     user_data = pull_query_param_from_queue()
     msg = get_restaurant_recommendation_msg(user_data)
+    try:
+        put_user_recommendation_into_dynamodb(msg, user_data)
+    except Exception as e:
+        print(f"error while putting user recommendation into dynamodb: {e}")
     send_text_message(msg)
     send_email(msg)
 
